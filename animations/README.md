@@ -45,12 +45,16 @@ smoothly into the firmware's shuffle instead of snapping between poses.
 
 1. Browse to `http://qbit.local` on the same network as the device.
 2. Open **Files** and upload any `.qgif` from [`faces/`](faces/).
-3. They join the idle shuffle immediately. (Use **Next Animation**, a double‑tap,
-   or the Home Assistant button to skip to one.)
+3. The file is saved to the device straight away. It enters the idle shuffle
+   when the current shuffle set next cycles round, or after a reboot — a reboot
+   is the reliable way to pull new faces into the rotation. (If the device had
+   no animations yet, the first upload starts playing immediately.)
 
 **Alternative — bake into a filesystem image:** drop the files into
-`firmware/data/` and run `pio run --target uploadfs`. Note this makes them part
-of the flashed default set for that device.
+`firmware/data/`, then from the **`firmware/`** directory run
+`pio run --target uploadfs` (the PlatformIO project lives in `firmware/`, so the
+command won't find it from the repo root). Note this makes them part of the
+flashed default set for that device.
 
 The device accepts a `.qgif` as long as the header says 128×64 with at least one
 frame — all of these do. Filenames just need to end in `.qgif` (≤64 chars); the
@@ -71,9 +75,15 @@ The faces are generated procedurally, so they're easy to tweak or extend. From
 ```bash
 pip install Pillow numpy
 cd generator
-python render.py      # writes out/*.qgif + preview_gifs/*.gif + preview_all.png
-python previews.py    # writes reel.gif (sequence) + grid.gif (all at once)
+python render.py      # regenerates ../faces/*.qgif and per-face ../previews/*.gif
+python previews.py    # refreshes ../previews/_reel.gif (whole-set preview)
 ```
+
+Both scripts write straight into the published [`faces/`](faces/) and
+[`previews/`](previews/) folders (resolved relative to the script, so the cwd
+doesn't matter), so the downloadable pack stays in sync — no manual copy step.
+Generation is deterministic, so re-running with no code change produces an
+identical pack (an empty `git diff`).
 
 - `faces.py` — the drawing engine (eye/heart/star/brow primitives, easing, the
   `.qgif` writer, which is byte‑for‑byte identical to `tools/gif2qbit.py`).

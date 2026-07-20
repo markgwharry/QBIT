@@ -5,10 +5,13 @@
 """
 from pathlib import Path
 from PIL import Image, ImageDraw
+from pathlib import Path
 import faces
 from expressions import ALL
 from render import grid_to_img
 
+HERE = Path(__file__).resolve().parent
+PREV = HERE.parent / "previews"; PREV.mkdir(exist_ok=True)
 SCALE = 4
 CW, CH = faces.W*SCALE, faces.H*SCALE
 anims = {name: fn() for name, fn in ALL.items()}
@@ -26,9 +29,9 @@ def reel():
         # brief pause on last frame
         for _ in range(6):
             frames.append(frames[-1]); durs.append(60)
-    frames[0].save("reel.gif", save_all=True, append_images=frames[1:],
+    frames[0].save(PREV / "_reel.gif", save_all=True, append_images=frames[1:],
                    duration=durs, loop=0, disposal=2)
-    print("saved reel.gif", len(frames), "frames")
+    print("saved previews/_reel.gif", len(frames), "frames")
 
 
 def grid():
@@ -52,9 +55,9 @@ def grid():
             d.text((x, y), name, fill=(150, 210, 150))
             canvas.paste(grid_to_img(g).convert("RGB").resize((cw, ch), Image.NEAREST), (x, y+lab))
         frames.append(canvas.convert("P", palette=Image.ADAPTIVE, colors=16)); durs.append(60)
-    frames[0].save("grid.gif", save_all=True, append_images=frames[1:],
+    frames[0].save(HERE / "grid.gif", save_all=True, append_images=frames[1:],
                    duration=durs, loop=0, disposal=2)
-    print("saved grid.gif", len(frames), "frames", (gw, gh))
+    print("saved grid.gif (dev preview)", len(frames), "frames", (gw, gh))
 
 
 if __name__ == "__main__":

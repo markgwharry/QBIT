@@ -5,8 +5,12 @@ from PIL import Image, ImageDraw
 import faces
 from expressions import ALL
 
-OUT = Path("out"); OUT.mkdir(exist_ok=True)
-GIF = Path("preview_gifs"); GIF.mkdir(exist_ok=True)
+# Write straight into the published pack dirs (resolved relative to this script,
+# so the cwd doesn't matter) — keeps animations/faces + animations/previews in sync.
+HERE = Path(__file__).resolve().parent
+PACK = HERE.parent
+OUT = PACK / "faces"; OUT.mkdir(exist_ok=True)
+GIF = PACK / "previews"; GIF.mkdir(exist_ok=True)
 
 
 def grid_to_img(g):
@@ -51,7 +55,7 @@ def main():
     combo = Image.new("RGB", (w, tot), (16, 16, 20)); y = 0
     for r in rows:
         combo.paste(r, (0, y)); y += r.height+6
-    combo.save("preview_all.png")
+    combo.save(HERE / "preview_all.png")
     print("saved preview_all.png", combo.size)
 
 
