@@ -1,0 +1,4 @@
+# Local generator dev artifacts (the published pack lives in ../faces + ../previews)
+__pycache__/
+preview_all.png
+grid.gif
