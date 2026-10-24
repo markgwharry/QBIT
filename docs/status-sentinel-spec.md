@@ -18,7 +18,8 @@
 
 `web/backend/` is the Node/TypeScript pairing, poke and library service (WebSocket,
 no MQTT). It is **not** an integration point for this subsystem; do not add sentinel
-routes to it.
+routes to it. The firmware's only use of it is the social layer, which is removed
+(see "Removed features").
 
 ### New components
 
@@ -47,6 +48,21 @@ It displays glanceable state from:
 - Schedule or business logic on-device. QBIT is a dumb renderer: cron jobs and
   services elsewhere decide *when* something is shown; QBIT decides only *how*.
 
+### Removed features
+
+The social layer is out of scope and is removed from the firmware rather than
+integrated into the priority stack:
+
+- Friend pokes, the WebSocket client to `web/backend`, and the server-offline overlay
+  (`network_task.cpp` WebSocket section, `poke_handler.*`)
+- Device claim and friend prompts (`CLAIM_PROMPT`, `FRIEND_PROMPT`, `POKE_DISPLAY`)
+- The Home Assistant poke entities (`/command` poke, `/poke_text/set`, last-poke
+  sensor in `mqtt_ha.cpp`) — superseded by `qbit/reminder`
+
+Kept: Wi-Fi provisioning, MQTT/HA discovery (mute, touch, animation), GIF playback,
+the settings menu, time, weather and OTA. What happens to `web/` itself (including
+the animation library) is a separate decision and not part of this work.
+
 ## Display state machine
 
 One face, competing sources — resolved by a strict priority stack. Highest active
@@ -60,8 +76,9 @@ level wins the display.
 
 Rules:
 
-- Multiple simultaneous alerts: show the most recent, cycle a count badge, and let
-  a double tap page through them (see "Touch behaviour").
+- Multiple simultaneous alerts: show the most recent with a count badge. Acking it
+  reveals the next; there is no separate alert-paging gesture (the Kuma summary
+  status page gives the overview).
 - A cleared/acked alert must fall back to the next-highest active state, not to blank.
 - Stale-heartbeat detection lives on QBIT (it is display-adjacent): if no health
   message from a known host within `heartbeat_timeout_s` (default 600), raise a
@@ -143,8 +160,10 @@ snapshot of that host:
 
 **Ack** — `qbit/<device_id>/ack` (published by the firmware)
 ```json
-{ "action": "dismiss", "target": "current", "ts": 1752940000 }
+{ "action": "ack", "id": "kuma:wiki.wharry.co.uk", "ts": 1752940000 }
 ```
+`action` is `"ack"` for an alert and `"dismiss"` for a reminder; `id` is the
+alert or reminder `id`.
 
 Use retained messages for `qbit/ambient/clockify` and `qbit/health/<host>` so state
 survives a QBIT restart. Alerts and reminders are not retained.
@@ -152,23 +171,31 @@ survives a QBIT restart. Alerts and reminders are not retained.
 ## Touch behaviour
 
 QBIT has one touch pad; gestures arrive on `gestureQueue` from `input_task.cpp`.
-In idle (`GIF_PLAYBACK`) the existing gestures are kept: single tap = next
-animation, long press = settings menu. Sentinel handling is layered on top, and
-the active sentinel level decides what a gesture means:
+Each gesture has one meaning in every state, so the pad can be used without first
+working out what the device is showing:
+
+- **Single tap** — act on or advance what is on screen
+- **Double tap** — status
+- **Long press** — settings (unchanged)
 
 | Showing | Single tap | Double tap | Long press |
 |---|---|---|---|
-| Alert | Ack the displayed alert | Page to the next active alert (no-op if only one) | Settings menu (unchanged) |
-| Reminder | Dismiss | — | Settings menu (unchanged) |
-| Ambient / idle | Next animation (unchanged) | Status pages: clock → Kuma summary → NAS disk % → VPS disk % → today's Clockify total | Settings menu (unchanged) |
-| Status pages | Exit pages | Next page | Settings menu (unchanged) |
+| Alert | Ack; reveal the next alert or fall to the next level | Status pages | Settings menu |
+| Reminder | Dismiss | Status pages | Settings menu |
+| Ambient / idle | Next animation (unchanged) | Status pages | Settings menu |
+| Status pages | Next page; exits after the last | Exit | Settings menu |
 
-- Status pages extend the existing double-tap clock view (the clock is page 1).
-- Leaving status pages — by single tap, after the last page, or after 15 s idle —
-  restores the **highest-priority active state**, not unconditionally idle.
+Status pages, in order: clock → Kuma summary (up/down counts, including acked
+alerts still down) → NAS disk % → VPS disk % → today's Clockify total. The clock is
+the existing double-tap view, now page 1.
+
+- Leaving status pages — by double tap, by tapping past the last page, or after
+  15 s with no touch — restores the **highest-priority active state**, not
+  unconditionally idle.
 - An alert arriving while status pages are shown pre-empts them immediately.
-- An ack/dismiss publishes `{"action": "ack", "id": "<alert id>", "ts": ...}` to
-  `qbit/<device_id>/ack`.
+- **Accidental-ack guard:** ignore single taps for 1 s after an alert or reminder
+  first appears, so a tap aimed at the previous screen cannot ack something unseen.
+- Each ack/dismiss publishes the ack payload above to `qbit/<device_id>/ack`.
 
 ## Source integrations (off-device, but specced here for coherence)
 
@@ -196,6 +223,8 @@ scripts may instead live on the hosts they monitor.
 
 Implement and verify in phases; each phase should be independently useful:
 
+0. Remove the social layer (see "Removed features"); confirm provisioning, HA
+   discovery, GIF playback, settings and OTA still work.
 1. Display state machine + priority stack + ack handling (testable with manual
    `mosquitto_pub`).
 2. Sentinel bridge with the Kuma route → live alerts.
