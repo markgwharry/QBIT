@@ -215,7 +215,7 @@ with QBIT under `tools/sentinel/` (alongside `tools/qbit-ctl`); host-specific
 scripts may instead live on the hosts they monitor.
 
 - **Sentinel bridge (new service):** a small standalone HTTP → MQTT bridge, run
-  on the NAS in Docker. Not part of `web/backend`.
+  on the NAS in Docker.
 - **Kuma → MQTT:** a `/kuma` route on the bridge that maps Kuma's webhook payload
   to the alert contract above. Map heartbeat status to `state`, monitor name to
   `id`/`text`.
