@@ -1,10 +1,32 @@
 # Status Sentinel Subsystem
 
 > Addition to CLAUDE.md — QBIT repo. This section defines a new subsystem. Read the
-> existing modules (`feed_adsb`, `buttond`, `webhook`) first and conform to their
-> conventions for structure, config, logging, and MQTT client usage. Where this spec
-> conflicts with an established repo pattern, prefer the repo pattern and flag the
-> conflict rather than silently diverging.
+> existing integration points below first and conform to their conventions for
+> structure, config, logging, and MQTT client usage. Where this spec conflicts with
+> an established repo pattern, prefer the repo pattern and flag the conflict rather
+> than silently diverging.
+
+### Existing components (on-device firmware, `firmware/src/`)
+
+| Concern | Where it lives today |
+|---|---|
+| MQTT client, subscriptions, inbound callback | `network_task.cpp` — PubSubClient, `mqttCallback()`, subscribes in `mqttReconnect()`; buffer already 1024 bytes |
+| Broker host / topic prefix / device ID | `settings.cpp` — `getMqttHost()`, `getMqttPrefix()` (default `qbit`), `getDeviceId()` |
+| Home Assistant discovery + outbound state | `mqtt_ha.cpp` |
+| Touch input (single pad) | `input_task.cpp` — gesture state machine → `gestureQueue` (`SINGLE_TAP`, `DOUBLE_TAP`, `LONG_PRESS` at 900 ms) |
+| Display states and gesture dispatch | `app_state.h` (`DisplayState`), `display_task.cpp` |
+
+`web/backend/` is the Node/TypeScript pairing, poke and library service (WebSocket,
+no MQTT). It is **not** an integration point for this subsystem; do not add sentinel
+routes to it.
+
+### New components
+
+- Firmware: a sentinel module (e.g. `sentinel.cpp/.h`) holding the priority stack,
+  fed by new subscriptions in `network_task.cpp` and rendered from `display_task.cpp`.
+- Off-device: a small **sentinel bridge** service (new, not part of `web/`) that
+  receives Kuma and Clockify webhooks and publishes the MQTT contract below; plus
+  per-host health scripts and the reminder helper. See "Source integrations".
 
 ## Purpose and scope
 
@@ -32,14 +54,14 @@ level wins the display.
 
 | Priority | Level    | Trigger                                  | Behaviour |
 |----------|----------|------------------------------------------|-----------|
-| 1        | alert    | Kuma down event; health breach; stale heartbeat | Alarmed face + short label. Persists until acked (button) or auto-cleared by a matching recovery event. |
-| 2        | reminder | Message on reminder topic                | Shown for `ttl_s`, then decays. Dismissable early via button. |
+| 1        | alert    | Kuma down event; health breach; stale heartbeat | Alarmed face + short label. Persists until acked (single tap) or auto-cleared by a matching recovery event. |
+| 2        | reminder | Message on reminder topic                | Shown for `ttl_s`, then decays. Dismissable early via single tap. |
 | 3        | ambient  | Clockify state                           | Idle face with a subtle indicator: project colour / timer-running glyph. Default when nothing else is active. |
 
 Rules:
 
 - Multiple simultaneous alerts: show the most recent, cycle a count badge, and let
-  a long press page through them.
+  a double tap page through them (see "Touch behaviour").
 - A cleared/acked alert must fall back to the next-highest active state, not to blank.
 - Stale-heartbeat detection lives on QBIT (it is display-adjacent): if no health
   message from a known host within `heartbeat_timeout_s` (default 600), raise a
@@ -47,14 +69,17 @@ Rules:
 
 ## MQTT contract
 
-Retain the repo's existing broker config and client wrapper. Topic scheme:
+Retain the repo's existing broker config and PubSubClient instance in
+`network_task.cpp`. `qbit` below is the configured `getMqttPrefix()`. Sentinel
+topics are shared (not under `<device_id>`) so publishers need not know which QBIT
+is listening. Topic scheme:
 
 ```
 qbit/alert/<source>        # kuma | health | <future>
 qbit/reminder
 qbit/ambient/clockify
 qbit/health/<host>         # heartbeats published by each host's cron
-qbit/ack                   # published by buttond on dismiss/ack
+qbit/<device_id>/ack       # published by the firmware on dismiss/ack
 ```
 
 ### Payloads (JSON, UTF-8)
@@ -95,14 +120,28 @@ qbit/ack                   # published by buttond on dismiss/ack
 ```json
 {
   "host": "nas",
-  "ok": true,
-  "checks": { "disk_pct": 71, "raid": "ok", "temp_c": 44 },
+  "ok": false,
+  "checks": {
+    "disk":  { "ok": false, "value": 93, "limit": 90, "text": "NAS disk 93%" },
+    "raid":  { "ok": true,  "value": "ok" },
+    "temp":  { "ok": true,  "value": 44,  "limit": 60 }
+  },
   "ts": 1752940000
 }
 ```
-If `ok` is false, QBIT raises an alert with `id` = `health:<host>:<failed-check>`.
 
-**Ack** — `qbit/ack` (published by `buttond`)
+Thresholds are evaluated by the publishing script, not by QBIT; `limit` is
+informational. `ok` is the AND of every `checks.*.ok`. Each heartbeat is a complete
+snapshot of that host:
+
+- For every check with `ok: false`, QBIT raises (or keeps) an alert with
+  `id` = `health:<host>:<check>` and the check's `text` (fallback
+  `"<host> <check>"`), severity `warning`.
+- Any `health:<host>:*` alert whose check is absent or `ok: true` in the latest
+  heartbeat is cleared, exactly as an `"up"` event clears a Kuma alert.
+- Any heartbeat from `<host>` clears its stale alert, `health:<host>:stale`.
+
+**Ack** — `qbit/<device_id>/ack` (published by the firmware)
 ```json
 { "action": "dismiss", "target": "current", "ts": 1752940000 }
 ```
@@ -110,24 +149,42 @@ If `ok` is false, QBIT raises an alert with `id` = `health:<host>:<failed-check>
 Use retained messages for `qbit/ambient/clockify` and `qbit/health/<host>` so state
 survives a QBIT restart. Alerts and reminders are not retained.
 
-## Button behaviour (`buttond`)
+## Touch behaviour
 
-- **Short press:** dismiss/ack the currently displayed alert or reminder.
-- **Long press:** cycle status readout pages — Kuma summary → NAS disk % → VPS disk %
-  → today's Clockify total → back to idle. Auto-return to idle after 15 s.
+QBIT has one touch pad; gestures arrive on `gestureQueue` from `input_task.cpp`.
+In idle (`GIF_PLAYBACK`) the existing gestures are kept: single tap = next
+animation, long press = settings menu. Sentinel handling is layered on top, and
+the active sentinel level decides what a gesture means:
+
+| Showing | Single tap | Double tap | Long press |
+|---|---|---|---|
+| Alert | Ack the displayed alert | Page to the next active alert (no-op if only one) | Settings menu (unchanged) |
+| Reminder | Dismiss | — | Settings menu (unchanged) |
+| Ambient / idle | Next animation (unchanged) | Status pages: clock → Kuma summary → NAS disk % → VPS disk % → today's Clockify total | Settings menu (unchanged) |
+| Status pages | Exit pages | Next page | Settings menu (unchanged) |
+
+- Status pages extend the existing double-tap clock view (the clock is page 1).
+- Leaving status pages — by single tap, after the last page, or after 15 s idle —
+  restores the **highest-priority active state**, not unconditionally idle.
+- An alert arriving while status pages are shown pre-empts them immediately.
+- An ack/dismiss publishes `{"action": "ack", "id": "<alert id>", "ts": ...}` to
+  `qbit/<device_id>/ack`.
 
 ## Source integrations (off-device, but specced here for coherence)
 
-These publishers may live in this repo (tools/ or scripts/) or on the hosts they
-monitor — follow whatever the repo already does for the webhook module's siblings.
+All of these are **new**; none exists in the repo today. Keep the ones that ship
+with QBIT under `tools/sentinel/` (alongside `tools/qbit-ctl`); host-specific
+scripts may instead live on the hosts they monitor.
 
-- **Kuma → MQTT:** extend the existing webhook module with a `/kuma` route that maps
-  Kuma's webhook payload to the alert contract above. Map heartbeat status to
-  `state`, monitor name to `id`/`text`.
+- **Sentinel bridge (new service):** a small standalone HTTP → MQTT bridge, run
+  on the NAS in Docker. Not part of `web/backend`.
+- **Kuma → MQTT:** a `/kuma` route on the bridge that maps Kuma's webhook payload
+  to the alert contract above. Map heartbeat status to `state`, monitor name to
+  `id`/`text`.
 - **Health heartbeats:** a small script per host (cron, every 5 min) gathering disk
   usage, RAID/SMART status, temperature, and publishing the heartbeat payload.
   Keep it dependency-light (stdlib + paho-mqtt).
-- **Clockify:** add a route to receive timer start/stop events (the existing
+- **Clockify:** add a route on the bridge to receive timer start/stop events (the existing
   Clockify webhook service on the VPS will forward, or POST directly) and publish
   the ambient payload. Separately, a scheduled check (cron on the NAS) queries the
   Clockify API on weekday mornings and publishes a reminder if no timer is running
@@ -141,7 +198,7 @@ Implement and verify in phases; each phase should be independently useful:
 
 1. Display state machine + priority stack + ack handling (testable with manual
    `mosquitto_pub`).
-2. Kuma route in the webhook module → live alerts.
+2. Sentinel bridge with the Kuma route → live alerts.
 3. Health heartbeat script + stale-heartbeat detection.
 4. Clockify ambient state.
 5. Reminder helper + cron examples.
