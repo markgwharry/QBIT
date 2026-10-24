@@ -16,10 +16,9 @@
 | Touch input (single pad) | `input_task.cpp` — gesture state machine → `gestureQueue` (`SINGLE_TAP`, `DOUBLE_TAP`, `LONG_PRESS` at 900 ms) |
 | Display states and gesture dispatch | `app_state.h` (`DisplayState`), `display_task.cpp` |
 
-`web/backend/` is the Node/TypeScript pairing, poke and library service (WebSocket,
-no MQTT). It is **not** an integration point for this subsystem; do not add sentinel
-routes to it. The firmware's only use of it is the social layer, which is removed
-(see "Removed features").
+`web/` (the Node/TypeScript pairing, poke and library service) is **not** an
+integration point. The firmware's only use of it is the social layer, and both
+are removed in phase 0 (see "Removed features").
 
 ### New components
 
@@ -59,9 +58,21 @@ integrated into the priority stack:
 - The Home Assistant poke entities (`/command` poke, `/poke_text/set`, last-poke
   sensor in `mqtt_ha.cpp`) — superseded by `qbit/reminder`
 
+- The HA `Server` connection binary sensor (`mqtt_ha.cpp`), which only reports
+  the WebSocket link
+- The whole `web/` stack (frontend, backend, admin, animation library, Docker
+  Compose files): nothing else uses it
+- `tools/qbit-ctl`, which only manages the `web/` backend's Docker container and data
+- The `QBIT_WS_HOST` secret and `-DWS_HOST/-DWS_PORT` flags in
+  `.github/workflows/build-and-release.yml`, and the `WS_HOST` comment in
+  `firmware/platformio.ini`
+- README sections on the web platform, self-hosting, claiming and friends (both
+  `README.md` and `README.zh-TW.md`)
+
 Kept: Wi-Fi provisioning, MQTT/HA discovery (mute, touch, animation), GIF playback,
-the settings menu, time, weather and OTA. What happens to `web/` itself (including
-the animation library) is a separate decision and not part of this work.
+the on-device web dashboard (`firmware/lib/web_dashboard`), the settings menu,
+time, weather, OTA, and the GitHub Pages flasher (`tools/flasher`,
+`deploy-gh-pages.yml`).
 
 ## Display state machine
 
@@ -223,8 +234,9 @@ scripts may instead live on the hosts they monitor.
 
 Implement and verify in phases; each phase should be independently useful:
 
-0. Remove the social layer (see "Removed features"); confirm provisioning, HA
-   discovery, GIF playback, settings and OTA still work.
+0. Remove the social layer and `web/` (see "Removed features"); confirm the
+   firmware builds in CI, and that provisioning, HA discovery, GIF playback, the
+   on-device dashboard, settings, OTA and the Pages flasher still work.
 1. Display state machine + priority stack + ack handling (testable with manual
    `mosquitto_pub`).
 2. Sentinel bridge with the Kuma route → live alerts.
